@@ -1,5 +1,5 @@
 # TUI
-A library to create textual user interfaces developed by Claude
+A library to create text-based user interfaces developed by Claude
 
 
 ## Description
