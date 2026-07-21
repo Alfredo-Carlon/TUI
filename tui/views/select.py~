@@ -1,0 +1,187 @@
+"""SelectView -- a navigable list/menu with highlight, multi-selection and
+per-state formatting.
+
+* One string per row; a moving *cursor* highlights the current row.
+* Moving the cursor with the up/down keys fires the ``on_item`` callback with
+  the newly highlighted row's string (only when the highlight actually moves).
+* A select keystroke toggles the row's membership in the selection set and
+  fires the ``on_select`` / ``on_deselect`` callback with the row's string.
+* The viewport follows the cursor when the list is taller than the view.
+* Horizontal scrolling is enabled only when left/right keystrokes are supplied.
+"""
+
+from .base import View
+from ..formatting import parse_format
+from ..geometry import clamp
+from ..keys import to_key
+
+
+class SelectView(View):
+    def __init__(self, name, origin, width, height, items=None,
+                 fmt_normal="", fmt_highlight="reverse", fmt_selected="bold",
+                 key_up="UP", key_down="DOWN", key_select=None,
+                 key_left=None, key_right=None,
+                 on_select=None, on_deselect=None, on_item=None, step=1):
+        super().__init__(name, origin, width, height)
+        self.fmt_normal = fmt_normal
+        self.fmt_highlight = fmt_highlight
+        self.fmt_selected = fmt_selected
+        self.k_up = to_key(key_up)
+        self.k_down = to_key(key_down)
+        self.k_select = to_key(key_select)
+        self.k_left = to_key(key_left)
+        self.k_right = to_key(key_right)
+        self.on_select = on_select
+        self.on_deselect = on_deselect
+        self.on_item = on_item
+        self.step = max(1, int(step))
+        self.cursor = 0
+        self.top = 0
+        self.h_offset = 0
+        self.selected = set()      # indices into self.items
+        self.set_items(items or [])
+
+    @property
+    def horizontal(self):
+        return self.k_left is not None or self.k_right is not None
+
+    # --- data mutation -------------------------------------------------------
+    def set_items(self, items):
+        self.items = [str(x) for x in items]
+        self.cursor = 0
+        self.top = 0
+        self.h_offset = 0
+        self.selected = set()
+
+    replace = set_items
+
+    def clear(self):
+        self.set_items([])
+
+    def selected_items(self):
+        return [self.items[i] for i in sorted(self.selected) if 0 <= i < len(self.items)]
+
+    def curnt(self):
+        """Return the currently highlighted item's string, or ``None`` when the
+        list is empty."""
+        if 0 <= self.cursor < len(self.items):
+            return self.items[self.cursor]
+        return None
+
+    def select(self, index, notify=False):
+        """Programmatically highlight the item at ``index`` (0-based).  The
+        index is clamped into range and the viewport scrolls to keep it
+        visible; an empty list leaves the highlight at 0.  ``on_item`` fires
+        only when ``notify`` is true and the highlight actually moves to a
+        different row -- matching key-driven movement."""
+        previous = self.cursor
+        self.cursor = int(index)
+        self._clamp_view()
+        if notify and self.items and self.cursor != previous and self.on_item:
+            self.on_item(self.items[self.cursor])
+
+    # --- viewport ------------------------------------------------------------
+    def _clamp_view(self):
+        if not self.items:
+            self.cursor = self.top = 0
+            return
+        self.cursor = clamp(self.cursor, 0, len(self.items) - 1)
+        if self.cursor < self.top:
+            self.top = self.cursor
+        elif self.cursor >= self.top + self.height:
+            self.top = self.cursor - self.height + 1
+        self.top = clamp(self.top, 0, max(0, len(self.items) - self.height))
+
+    # --- rendering -----------------------------------------------------------
+    def draw(self):
+        self._erase()
+        self._clamp_view()
+        visible = self.items[self.top:self.top + self.height]
+        for i, item in enumerate(visible):
+            idx = self.top + i
+            ly = self.height - 1 - i
+            if idx == self.cursor:
+                spec = self.fmt_highlight
+            elif idx in self.selected:
+                spec = self.fmt_selected
+            else:
+                spec = self.fmt_normal
+            attr = parse_format(spec)
+            if self.horizontal:
+                text = item[self.h_offset:self.h_offset + self.width]
+            else:
+                text = item[:self.width]
+            # Pad so the highlight/reverse fills the whole row width.
+            self._addstr(0, ly, text.ljust(self.width), attr)
+
+    # --- interaction ---------------------------------------------------------
+    def _move(self, delta):
+        """Move the cursor by ``delta`` rows, clamp it, and -- if the highlight
+        actually landed on a different row -- fire ``on_item`` with its string.
+        Pressing into a boundary (no movement) fires nothing."""
+        previous = self.cursor
+        self.cursor += delta
+        self._clamp_view()
+        if self.items and self.cursor != previous and self.on_item:
+            self.on_item(self.items[self.cursor])
+
+    def _toggle(self):
+        if not self.items:
+            return
+        idx = self.cursor
+        item = self.items[idx]
+        if idx in self.selected:
+            # Ignore the action entirely when no deselect handler is bound.
+            if not self.on_deselect:
+                return
+            self.selected.discard(idx)
+            self.on_deselect(item)
+        else:
+            # Ignore the action entirely when no select handler is bound.
+            if not self.on_select:
+                return
+            self.selected.add(idx)
+            self.on_select(item)
+
+    def handle_key(self, key):
+        if self.k_up is not None and key == self.k_up:
+            self._move(-self.step)
+            return True
+        if self.k_down is not None and key == self.k_down:
+            self._move(self.step)
+            return True
+        if self.k_select is not None and key == self.k_select:
+            self._toggle()
+            return True
+        if self.horizontal:
+            longest = max((len(i) for i in self.items), default=0)
+            max_x = max(0, longest - self.width)
+            if self.k_left is not None and key == self.k_left:
+                self.h_offset = clamp(self.h_offset - self.step, 0, max_x)
+                return True
+            if self.k_right is not None and key == self.k_right:
+                self.h_offset = clamp(self.h_offset + self.step, 0, max_x)
+                return True
+        return False
+
+    @classmethod
+    def from_dict(cls, d):
+        return cls(
+            name=d.get("name", ""),
+            origin=d["origin"],
+            width=d["width"],
+            height=d["height"],
+            items=d.get("items"),
+            fmt_normal=d.get("menu-normal", ""),
+            fmt_highlight=d.get("menu-highlighted", "reverse"),
+            fmt_selected=d.get("select-font", "bold"),
+            key_up=d.get("menu-up", "UP"),
+            key_down=d.get("menu-down", "DOWN"),
+            key_select=d.get("select-item"),
+            key_left=d.get("scroll-left"),
+            key_right=d.get("scroll-right"),
+            on_select=d.get("select-callback"),
+            on_deselect=d.get("deselect-callback"),
+            on_item=d.get("on-item-callback"),
+            step=int(d.get("step", 1)),
+        )
