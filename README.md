@@ -3,7 +3,7 @@ A library to create textual user interfaces developed by Claude
 
 
 ## Description
-This is a standalone Python library created entirely by Claude after an iteration of 12 rounds.
+This is a standalone Python library created entirely by Claude after an iteration of 15 rounds.
 It contains no formal tests, the testing technique was 'vibe-coding': I'll use it and if it
 works then move on, if not, make Claude aware of it.
 
